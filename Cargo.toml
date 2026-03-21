@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Simplify the jj commit experience"
 repository = "https://github.com/Odonno/jjcc"
+readme = "README.md"
 license-file = "LICENSE"
 keywords = ["cli", "jujutsu"]
 categories = ["command-line-utilities"]
