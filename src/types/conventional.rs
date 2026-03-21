@@ -1,5 +1,5 @@
-use std::fmt;
 use clap::ValueEnum;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
 pub enum ConventionalType {

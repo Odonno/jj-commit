@@ -1,5 +1,5 @@
 use clap::Parser;
-use color_eyre::eyre::{bail, Result};
+use color_eyre::eyre::{Result, bail};
 
 mod commit;
 mod convention;
@@ -44,12 +44,8 @@ async fn main() -> Result<()> {
         bail!("--scopes is only valid when using the conventional commit convention");
     }
 
-    let commit_message = commit::build_commit_message(
-        &convention,
-        cli.message.as_deref(),
-        cli.r#type,
-        cli.scopes,
-    )?;
+    let commit_message =
+        commit::build_commit_message(&convention, cli.message.as_deref(), cli.r#type, cli.scopes)?;
 
     jj::commit(&commit_message).await?;
 

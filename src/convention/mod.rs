@@ -2,7 +2,7 @@ mod conventional;
 mod gitmoji;
 
 use clap::ValueEnum;
-use color_eyre::eyre::{bail, Result, WrapErr};
+use color_eyre::eyre::{Result, WrapErr, bail};
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
 pub enum Convention {

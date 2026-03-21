@@ -11,10 +11,8 @@ use std::{env, path::PathBuf};
 
 /// Build a `StackedConfig` that mirrors what the real `jj` CLI loads:
 ///   1. jj-lib built-in defaults  (`user.name = ""`, `user.email = ""`, …)
-///   2. User config file           (`$JJ_CONFIG`, `~/.config/jj/config.toml`,
-///                                  or `~/.jjconfig.toml`)
-///   3. Env overrides              (`$JJ_USER` → `user.name`,
-///                                  `$JJ_EMAIL` → `user.email`)
+///   2. User config file           (`$JJ_CONFIG`, `~/.config/jj/config.toml`, or `~/.jjconfig.toml`)
+///   3. Env overrides              (`$JJ_USER` → `user.name`,`$JJ_EMAIL` → `user.email`)
 fn load_config() -> Result<StackedConfig> {
     let mut config = StackedConfig::with_defaults();
 
@@ -38,23 +36,22 @@ fn load_config() -> Result<StackedConfig> {
         let xdg_base = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-        if let Some(platform_config) = xdg_base.map(|d| d.join("jj").join("config.toml")) {
-            if platform_config.exists() {
-                config
-                    .load_file(ConfigSource::User, platform_config)
-                    .wrap_err("Failed to load platform jj config")?;
-            }
+        if let Some(platform_config) = xdg_base.map(|d| d.join("jj").join("config.toml"))
+            && platform_config.exists()
+        {
+            config
+                .load_file(ConfigSource::User, platform_config)
+                .wrap_err("Failed to load platform jj config")?;
         }
 
         // Legacy path: $HOME/.jjconfig.toml
         if let Some(legacy_config) =
             env::var_os("HOME").map(|h| PathBuf::from(h).join(".jjconfig.toml"))
+            && legacy_config.exists()
         {
-            if legacy_config.exists() {
-                config
-                    .load_file(ConfigSource::User, legacy_config)
-                    .wrap_err("Failed to load ~/.jjconfig.toml")?;
-            }
+            config
+                .load_file(ConfigSource::User, legacy_config)
+                .wrap_err("Failed to load ~/.jjconfig.toml")?;
         }
     }
 
