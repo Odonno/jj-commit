@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use color_eyre::eyre::{bail, eyre, Result, WrapErr};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, ValueEnum)]
@@ -60,16 +61,16 @@ fn is_gitmoji(msg: &str) -> bool {
 }
 
 /// Fetch the last `n` commit descriptions from the jj repository.
-fn fetch_commit_messages(n: usize) -> Result<Vec<String>, String> {
+fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
     let revset = format!("ancestors(@, {})", n);
     let output = Command::new("jj")
         .args(["log", "--no-graph", "-r", &revset, "-T", "description ++ \"\\n---\\n\""])
         .output()
-        .map_err(|e| format!("Failed to run `jj log`: {}", e))?;
+        .wrap_err("Failed to run `jj log`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("`jj log` failed: {}", stderr));
+        return Err(eyre!("`jj log` failed: {}", stderr));
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -87,22 +88,24 @@ fn fetch_commit_messages(n: usize) -> Result<Vec<String>, String> {
 /// - Returns `Err` if no commit matches any convention.
 /// - Returns `Err` if both conventions are tied.
 /// - Returns the convention with the highest match count otherwise.
-fn detect_convention(messages: &[String]) -> Result<Convention, String> {
+fn detect_convention(messages: &[String]) -> Result<Convention> {
     let conventional_count = messages.iter().filter(|m| is_conventional(m)).count();
     let gitmoji_count = messages.iter().filter(|m| is_gitmoji(m)).count();
 
     match (conventional_count, gitmoji_count) {
-        (0, 0) => Err("No commit adheres to a known convention (conventional commits or gitmoji).".to_string()),
-        (c, g) if c == g => Err(format!(
+        (0, 0) => bail!("No commit adheres to a known convention (conventional commits or gitmoji)."),
+        (c, g) if c == g => bail!(
             "Cannot detect convention: tie between conventional commits ({c}) and gitmoji ({g})."
-        )),
+        ),
         (c, g) if c > g => Ok(Convention::Conventional),
         _ => Ok(Convention::Gitmoji),
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+
     let cli = Cli::parse();
 
     let num_commits_for_detection = 10;
@@ -110,24 +113,16 @@ async fn main() {
     let convention = if let Some(c) = cli.convention {
         c
     } else {
-        let messages = match fetch_commit_messages(num_commits_for_detection) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Error fetching commits: {}", e);
-                std::process::exit(1);
-            }
-        };
+        let messages = fetch_commit_messages(num_commits_for_detection)
+            .wrap_err("Error fetching commits")?;
 
-        match detect_convention(&messages) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Error detecting convention: {}", e);
-                std::process::exit(1);
-            }
-        }
+        detect_convention(&messages)
+            .wrap_err("Error detecting convention")?
     };
 
     println!("{:?}", convention);
+
+    Ok(())
 }
 
 #[cfg(test)]
