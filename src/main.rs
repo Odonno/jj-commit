@@ -20,6 +20,10 @@ struct Cli {
     /// Conventional commit type, only from the conventional convention
     #[arg(short, long, value_enum, value_name = "TYPE")]
     r#type: Option<types::ConventionalType>,
+
+    /// Conventional commit scopes, only from the conventional convention (repeatable)
+    #[arg(short, long, value_name = "SCOPE")]
+    scopes: Vec<String>,
 }
 
 #[tokio::main]
@@ -35,8 +39,17 @@ async fn main() -> Result<()> {
         bail!("--type is only valid when using the conventional commit convention");
     }
 
-    let commit_message =
-        commit::build_commit_message(&convention, cli.message.as_deref(), cli.r#type)?;
+    // --scopes is only meaningful for the conventional convention
+    if !cli.scopes.is_empty() && convention != convention::Convention::Conventional {
+        bail!("--scopes is only valid when using the conventional commit convention");
+    }
+
+    let commit_message = commit::build_commit_message(
+        &convention,
+        cli.message.as_deref(),
+        cli.r#type,
+        cli.scopes,
+    )?;
 
     jj::commit(&commit_message)?;
 

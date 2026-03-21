@@ -47,6 +47,7 @@ pub fn build_commit_message(
     convention: &Convention,
     raw_message: Option<&str>,
     commit_type: Option<ConventionalType>,
+    cli_scopes: Vec<String>,
 ) -> Result<String> {
     let mut pre = raw_message
         .map(|m| parse_message(convention, m))
@@ -55,6 +56,11 @@ pub fn build_commit_message(
     // --type overrides whatever was parsed from --message
     if let Some(ref t) = commit_type {
         pre.commit_type = Some(t.as_str().to_string());
+    }
+
+    // --scopes overrides whatever was parsed from --message (when provided)
+    if !cli_scopes.is_empty() {
+        pre.scopes = Some(cli_scopes);
     }
 
     match convention {
