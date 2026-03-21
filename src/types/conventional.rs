@@ -1,6 +1,7 @@
 use std::fmt;
+use clap::ValueEnum;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, ValueEnum)]
 pub enum ConventionalType {
     Build,
     Chore,

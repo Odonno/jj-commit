@@ -5,6 +5,7 @@ use color_eyre::eyre::Result;
 use inquire::Text;
 
 use crate::convention::Convention;
+use crate::types::ConventionalType;
 
 #[derive(Debug)]
 pub struct CommitMessage {
@@ -39,13 +40,25 @@ fn parse_message(convention: &Convention, message: &str) -> CommitMessage {
 
 /// Run interactive prompts to fill in any missing commit message fields,
 /// then return the formatted commit message string.
-pub fn build_commit_message(convention: &Convention, raw_message: Option<&str>) -> Result<String> {
-    let pre = raw_message
+///
+/// `commit_type` is an explicit type override (from `--type`); it takes precedence over any type
+/// embedded in `raw_message`.
+pub fn build_commit_message(
+    convention: &Convention,
+    raw_message: Option<&str>,
+    commit_type: Option<ConventionalType>,
+) -> Result<String> {
+    let mut pre = raw_message
         .map(|m| parse_message(convention, m))
         .unwrap_or_else(CommitMessage::empty);
 
+    // --type overrides whatever was parsed from --message
+    if let Some(ref t) = commit_type {
+        pre.commit_type = Some(t.as_str().to_string());
+    }
+
     match convention {
-        Convention::Conventional => conventional::build_conventional(pre),
+        Convention::Conventional => conventional::build_conventional(pre, commit_type),
         Convention::Gitmoji => gitmoji::build_gitmoji(pre),
     }
 }

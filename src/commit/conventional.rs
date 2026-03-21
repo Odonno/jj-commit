@@ -49,8 +49,18 @@ pub fn parse_conventional(message: &str) -> CommitMessage {
     }
 }
 
-pub fn build_conventional(pre: CommitMessage) -> Result<String> {
-    let commit_type = prompt_conventional_type(pre.commit_type.as_deref())?;
+/// Build a conventional commit message.
+///
+/// `forced_type` is provided when the user passed `--type` on the CLI; in that case the type
+/// selection prompt is skipped entirely.
+pub fn build_conventional(
+    pre: CommitMessage,
+    forced_type: Option<ConventionalType>,
+) -> Result<String> {
+    let commit_type = match forced_type {
+        Some(t) => t,
+        None => prompt_conventional_type(pre.commit_type.as_deref())?,
+    };
     let scopes = crate::commit::prompt_scopes(pre.scopes)?;
     let description = crate::commit::prompt_description(pre.description.as_deref())?;
 
