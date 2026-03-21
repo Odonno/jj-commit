@@ -4,6 +4,7 @@ use color_eyre::eyre::Result;
 mod commit;
 mod convention;
 mod jj;
+mod types;
 
 #[derive(Debug, Parser)]
 #[command(name = "jjc", about = "Simplify the jj commit experience")]
