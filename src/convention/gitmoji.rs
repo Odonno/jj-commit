@@ -2,14 +2,14 @@
 pub fn is_gitmoji(msg: &str) -> bool {
     let first_line = msg.lines().next().unwrap_or("").trim();
     // Shortcode form: :word:
-    if first_line.starts_with(':') {
-        if let Some(end) = first_line[1..].find(':') {
-            let code = &first_line[1..=end];
-            return !code.is_empty()
-                && code
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-        }
+    if let Some(inner) = first_line.strip_prefix(':')
+        && let Some(end) = inner.find(':')
+    {
+        let code = &inner[..end];
+        return !code.is_empty()
+            && code
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
     }
 
     // Actual emoji: first char has a high codepoint (emoji range starts around U+1F300)

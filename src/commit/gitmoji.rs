@@ -8,37 +8,37 @@ pub fn parse_gitmoji(message: &str) -> CommitMessage {
     let first_line = message.lines().next().unwrap_or("").trim();
 
     // Try `:code: description` form
-    if first_line.starts_with(':') {
-        if let Some(end) = first_line[1..].find(':') {
-            let code = format!(":{}:", &first_line[1..=end]);
-            let rest = first_line[end + 2..].trim();
-            return CommitMessage {
-                commit_type: Some(code),
-                scopes: None,
-                description: if rest.is_empty() {
-                    None
-                } else {
-                    Some(rest.to_string())
-                },
-            };
-        }
+    if let Some(inner) = first_line.strip_prefix(':')
+        && let Some(end) = inner.find(':')
+    {
+        let code = format!(":{}:", &inner[..end]);
+        let rest = first_line[end + 2..].trim();
+        return CommitMessage {
+            commit_type: Some(code),
+            scopes: None,
+            description: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            },
+        };
     }
 
     // Try emoji prefix form: first char is high-codepoint emoji
-    if let Some(ch) = first_line.chars().next() {
-        if ch as u32 > 0x00FF {
-            let emoji = ch.to_string();
-            let rest = first_line[ch.len_utf8()..].trim();
-            return CommitMessage {
-                commit_type: Some(emoji),
-                scopes: None,
-                description: if rest.is_empty() {
-                    None
-                } else {
-                    Some(rest.to_string())
-                },
-            };
-        }
+    if let Some(ch) = first_line.chars().next()
+        && ch as u32 > 0x00FF
+    {
+        let emoji = ch.to_string();
+        let rest = first_line[ch.len_utf8()..].trim();
+        return CommitMessage {
+            commit_type: Some(emoji),
+            scopes: None,
+            description: if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            },
+        };
     }
 
     // Fallback: treat entire string as description

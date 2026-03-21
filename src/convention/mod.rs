@@ -12,7 +12,7 @@ pub enum Convention {
 
 /// Resolve the convention: use the provided one directly, or auto-detect from
 /// the last `n` commits in the repository.
-pub fn resolve_convention(convention: Option<Convention>) -> Result<Convention> {
+pub async fn resolve_convention(convention: Option<Convention>) -> Result<Convention> {
     if let Some(c) = convention {
         return Ok(c);
     }
@@ -20,6 +20,7 @@ pub fn resolve_convention(convention: Option<Convention>) -> Result<Convention> 
     let num_commits_for_detection = 10;
 
     let messages = crate::jj::fetch_commit_messages(num_commits_for_detection)
+        .await
         .wrap_err("Error fetching commits")?;
     detect_convention(&messages).wrap_err("Error detecting convention")
 }

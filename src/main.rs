@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let convention = convention::resolve_convention(cli.convention)?;
+    let convention = convention::resolve_convention(cli.convention).await?;
 
     // --type is only meaningful for the conventional convention
     if cli.r#type.is_some() && convention != convention::Convention::Conventional {
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
         cli.scopes,
     )?;
 
-    jj::commit(&commit_message)?;
+    jj::commit(&commit_message).await?;
 
     Ok(())
 }

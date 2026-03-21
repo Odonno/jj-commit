@@ -81,7 +81,7 @@ fn prompt_conventional_type(prefill: Option<&str>) -> Result<ConventionalType> {
 
     // If we have a valid pre-filled type, use it as the default selection
     let starting_cursor = prefill
-        .and_then(|s| ConventionalType::from_str(s))
+        .and_then(ConventionalType::from_str)
         .and_then(|t| options.iter().position(|o| o == &t))
         .unwrap_or(0);
 
