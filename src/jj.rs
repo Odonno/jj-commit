@@ -30,3 +30,17 @@ pub fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
 
     Ok(messages)
 }
+
+/// Run `jj commit -m <message>` to create a new commit from the working copy.
+pub fn commit(message: &str) -> Result<()> {
+    let status = Command::new("jj")
+        .args(["commit", "-m", message])
+        .status()
+        .wrap_err("Failed to run `jj commit`")?;
+
+    if !status.success() {
+        return Err(eyre!("`jj commit` exited with status {}", status));
+    }
+
+    Ok(())
+}
