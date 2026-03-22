@@ -1,3 +1,9 @@
+[![CI](https://github.com/Odonno/jj-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/Odonno/jj-commit/actions/workflows/ci.yml)
+[![Crates.io version](https://img.shields.io/crates/v/jj-commit)](https://crates.io/crates/jj-commit)
+[![Latest release](https://img.shields.io/github/v/release/Odonno/jj-commit)](https://github.com/Odonno/jj-commit/releases/latest)
+[![Rust version](https://img.shields.io/badge/rust-1.94.0%2B-orange)](https://www.rust-lang.org)
+[![License](https://img.shields.io/github/license/Odonno/jj-commit)](./LICENSE)
+
 # jj-commit
 
 > A guided, convention-aware commit-message builder for [Jujutsu](https://github.com/martinvonz/jj).
@@ -9,14 +15,14 @@
 ## Install
 
 ```sh
-cargo install --git https://github.com/Odonno/jjcc
+cargo install --git https://github.com/Odonno/jj-commit
 ```
 
 Or build from source:
 
 ```sh
-git clone https://github.com/Odonno/jjcc
-cd jjcc
+git clone https://github.com/Odonno/jj-commit
+cd jj-commit
 cargo build --release
 # binary is at ./target/release/jjc
 ```
