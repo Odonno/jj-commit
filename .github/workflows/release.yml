@@ -1,0 +1,268 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BINARY_NAME: jjc
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: jjc-linux-x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: jjc-windows-x86_64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: jjc-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: jjc-macos-aarch64
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} ${{ matrix.artifact }}
+          tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe" "${{ matrix.artifact }}.exe"
+          Compress-Archive -Path "${{ matrix.artifact }}.exe" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload binary (Unix)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+      - name: Upload binary (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+  upload-release-assets:
+    name: Upload release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload assets to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish crate
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-winget:
+    name: Publish to winget
+    needs: upload-release-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Odonno.jj-commit
+          installers-regex: 'jjc-windows-x86_64\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  publish-aur-bin:
+    name: Publish jj-commit-bin to AUR
+    needs: upload-release-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Linux x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: jjc-linux-x86_64
+          path: artifacts
+
+      - name: Compute SHA256 of Linux binary
+        id: sha256
+        run: echo "hash=$(sha256sum artifacts/jjc-linux-x86_64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PKGBUILD for jj-commit-bin
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          SHA256: ${{ steps.sha256.outputs.hash }}
+        run: |
+          # Strip leading 'v' from tag if present
+          PKG_VERSION="${VERSION#v}"
+
+          mkdir -p aur-bin
+          cat > aur-bin/PKGBUILD <<EOF
+          # Maintainer: Odonno <odonno@users.noreply.github.com>
+          pkgname=jj-commit-bin
+          pkgver=${PKG_VERSION}
+          pkgrel=1
+          pkgdesc="Simplify the jj commit experience"
+          arch=('x86_64')
+          url="https://github.com/Odonno/jj-commit"
+          license=('custom')
+          provides=('jj-commit')
+          conflicts=('jj-commit')
+          source=("jjc-linux-x86_64.tar.gz::https://github.com/Odonno/jj-commit/releases/download/${VERSION}/jjc-linux-x86_64.tar.gz")
+          sha256sums=('${SHA256}')
+
+          package() {
+              install -Dm755 jjc-linux-x86_64 "\${pkgdir}/usr/bin/jjc"
+          }
+          EOF
+
+          cat > aur-bin/.SRCINFO <<EOF
+          pkgbase = jj-commit-bin
+              pkgdesc = Simplify the jj commit experience
+              pkgver = ${PKG_VERSION}
+              pkgrel = 1
+              url = https://github.com/Odonno/jj-commit
+              arch = x86_64
+              license = custom
+              provides = jj-commit
+              conflicts = jj-commit
+              source = jjc-linux-x86_64.tar.gz::https://github.com/Odonno/jj-commit/releases/download/${VERSION}/jjc-linux-x86_64.tar.gz
+              sha256sums = ${SHA256}
+
+          pkgname = jj-commit-bin
+          EOF
+
+      - name: Publish jj-commit-bin to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2
+        with:
+          pkgname: jj-commit-bin
+          pkgbuild: aur-bin/PKGBUILD
+          srcinfo: aur-bin/.SRCINFO
+          commit_username: Odonno
+          commit_email: odonno@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.event.release.tag_name }}"
+
+  publish-aur-src:
+    name: Publish jj-commit to AUR
+    needs: publish-crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute SHA256 of source tarball
+        id: sha256
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          URL="https://github.com/Odonno/jj-commit/archive/refs/tags/${VERSION}.tar.gz"
+          curl -sL "$URL" -o source.tar.gz
+          echo "hash=$(sha256sum source.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PKGBUILD for jj-commit (source)
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          SHA256: ${{ steps.sha256.outputs.hash }}
+        run: |
+          PKG_VERSION="${VERSION#v}"
+
+          mkdir -p aur-src
+          cat > aur-src/PKGBUILD <<EOF
+          # Maintainer: Odonno <odonno@users.noreply.github.com>
+          pkgname=jj-commit
+          pkgver=${PKG_VERSION}
+          pkgrel=1
+          pkgdesc="Simplify the jj commit experience"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/Odonno/jj-commit"
+          license=('custom')
+          depends=('gcc-libs')
+          makedepends=('rust' 'cargo')
+          provides=('jj-commit')
+          conflicts=('jj-commit-bin')
+          source=("jj-commit-${PKG_VERSION}.tar.gz::https://github.com/Odonno/jj-commit/archive/refs/tags/${VERSION}.tar.gz")
+          sha256sums=('${SHA256}')
+
+          build() {
+              cd "jj-commit-${PKG_VERSION}"
+              cargo build --release --locked
+          }
+
+          package() {
+              cd "jj-commit-${PKG_VERSION}"
+              install -Dm755 target/release/jjc "\${pkgdir}/usr/bin/jjc"
+              install -Dm644 LICENSE "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"
+          }
+          EOF
+
+          cat > aur-src/.SRCINFO <<EOF
+          pkgbase = jj-commit
+              pkgdesc = Simplify the jj commit experience
+              pkgver = ${PKG_VERSION}
+              pkgrel = 1
+              url = https://github.com/Odonno/jj-commit
+              arch = x86_64
+              arch = aarch64
+              license = custom
+              depends = gcc-libs
+              makedepends = rust
+              makedepends = cargo
+              provides = jj-commit
+              conflicts = jj-commit-bin
+              source = jj-commit-${PKG_VERSION}.tar.gz::https://github.com/Odonno/jj-commit/archive/refs/tags/${VERSION}.tar.gz
+              sha256sums = ${SHA256}
+
+          pkgname = jj-commit
+          EOF
+
+      - name: Publish jj-commit to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2
+        with:
+          pkgname: jj-commit
+          pkgbuild: aur-src/PKGBUILD
+          srcinfo: aur-src/.SRCINFO
+          commit_username: Odonno
+          commit_email: odonno@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.event.release.tag_name }}"
