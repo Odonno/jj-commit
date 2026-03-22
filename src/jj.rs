@@ -1,7 +1,10 @@
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use jj_lib::{
+    backend::CommitId,
     config::{ConfigLayer, ConfigSource, StackedConfig},
     local_working_copy::{LocalWorkingCopy, LocalWorkingCopyFactory},
+    op_store::RefTarget,
+    ref_name::RefNameBuf,
     repo::{Repo, StoreFactories},
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
@@ -132,7 +135,8 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
 }
 
 /// Create a new commit with the given message using jj-lib directly.
-pub async fn commit(message: &str) -> Result<()> {
+/// Returns the `CommitId` of the newly written (described) commit.
+pub async fn commit(message: &str) -> Result<CommitId> {
     let mut workspace = load_workspace()?;
     let repo = workspace
         .repo_loader()
@@ -187,6 +191,108 @@ pub async fn commit(message: &str) -> Result<()> {
         .check_out(new_repo.op_id().clone(), None, &new_commit)
         .await
         .wrap_err("Failed to update working copy")?;
+
+    Ok(new_commit.id().clone())
+}
+
+/// Walk the first-parent ancestor chain starting from the parents of the
+/// current working-copy commit and return the names of all local bookmarks
+/// found on the *nearest* ancestor that has at least one.
+///
+/// Skips the WC commit itself (typically an empty, open change).
+/// Returns `None` if no ancestor has any local bookmark.
+pub async fn find_nearest_ancestor_bookmarks() -> Result<Option<Vec<String>>> {
+    let workspace = load_workspace()?;
+    let repo = workspace
+        .repo_loader()
+        .load_at_head()
+        .await
+        .wrap_err("Failed to load jj repo")?;
+
+    let workspace_name = workspace.workspace_name().to_owned();
+    let wc_commit_id = repo
+        .view()
+        .get_wc_commit_id(&workspace_name)
+        .cloned()
+        .wrap_err("No working-copy commit found for this workspace")?;
+
+    let wc_commit = repo
+        .store()
+        .get_commit(&wc_commit_id)
+        .wrap_err("Failed to get working-copy commit")?;
+
+    // Start from the WC's first parent, walking first-parent only.
+    let first_parent_id = match wc_commit.parent_ids().first() {
+        Some(id) => id.clone(),
+        None => return Ok(None),
+    };
+
+    let mut current = repo
+        .store()
+        .get_commit(&first_parent_id)
+        .wrap_err("Failed to get parent commit")?;
+
+    loop {
+        let names: Vec<String> = repo
+            .view()
+            .local_bookmarks_for_commit(current.id())
+            .map(|(name, _)| name.as_str().to_owned())
+            .collect();
+
+        if !names.is_empty() {
+            return Ok(Some(names));
+        }
+
+        // Advance to the first parent.
+        let parent_ids = current.parent_ids();
+        if parent_ids.is_empty() {
+            return Ok(None);
+        }
+
+        current = repo
+            .store()
+            .get_commit(&parent_ids[0])
+            .wrap_err("Failed to get ancestor commit")?;
+    }
+}
+
+/// Move local bookmark `name` to point to `commit_id`.
+pub async fn advance_bookmark(name: &str, commit_id: &CommitId) -> Result<()> {
+    let mut workspace = load_workspace()?;
+    let repo = workspace
+        .repo_loader()
+        .load_at_head()
+        .await
+        .wrap_err("Failed to load jj repo")?;
+
+    let mut tx = repo.start_transaction();
+    let repo = tx.repo_mut();
+
+    let ref_name: RefNameBuf = name.into();
+    let target = RefTarget::normal(commit_id.clone());
+    repo.set_local_bookmark_target(&ref_name, target);
+
+    let new_repo = tx
+        .commit("advance bookmark")
+        .await
+        .wrap_err("Failed to commit bookmark transaction")?;
+
+    // Update working copy so the on-disk state is consistent
+    let workspace_name = workspace.workspace_name().to_owned();
+    let wc_commit_id = new_repo
+        .view()
+        .get_wc_commit_id(&workspace_name)
+        .cloned()
+        .wrap_err("No working-copy commit found after bookmark advance")?;
+    let wc_commit = new_repo
+        .store()
+        .get_commit(&wc_commit_id)
+        .wrap_err("Failed to get working-copy commit after bookmark advance")?;
+
+    workspace
+        .check_out(new_repo.op_id().clone(), None, &wc_commit)
+        .await
+        .wrap_err("Failed to update working copy after bookmark advance")?;
 
     Ok(())
 }

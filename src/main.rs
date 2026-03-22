@@ -1,5 +1,6 @@
 use clap::Parser;
 use color_eyre::eyre::{Result, bail};
+use inquire::MultiSelect;
 
 mod commit;
 mod convention;
@@ -24,6 +25,10 @@ struct Cli {
     /// Conventional commit scopes, only from the conventional convention (repeatable)
     #[arg(short, long, value_name = "SCOPE")]
     scopes: Vec<String>,
+
+    /// Advance the bookmark from the closest ancestor to point to the newly created commit
+    #[arg(short = 'a', long)]
+    advance_bookmark: bool,
 }
 
 #[tokio::main]
@@ -47,7 +52,29 @@ async fn main() -> Result<()> {
     let commit_message =
         commit::build_commit_message(&convention, cli.message.as_deref(), cli.r#type, cli.scopes)?;
 
-    jj::commit(&commit_message).await?;
+    // Find the nearest ancestor bookmark *before* committing, while the WC is still the open change.
+    // After commit() the topology shifts and the search would yield a different (or no) result.
+    let ancestor_bookmarks = if cli.advance_bookmark {
+        jj::find_nearest_ancestor_bookmarks().await?
+    } else {
+        None
+    };
+
+    let new_commit_id = jj::commit(&commit_message).await?;
+
+    if let Some(bookmarks) = ancestor_bookmarks {
+        let to_advance: Vec<String> = match bookmarks.len() {
+            1 => bookmarks,
+            _ => MultiSelect::new("Select bookmarks to advance to the new commit:", bookmarks)
+                .prompt()?,
+        };
+
+        for name in to_advance {
+            jj::advance_bookmark(&name, &new_commit_id).await?;
+        }
+    } else if cli.advance_bookmark {
+        eprintln!("warning: no bookmarks found in ancestors; nothing to advance");
+    }
 
     Ok(())
 }
