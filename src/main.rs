@@ -8,7 +8,7 @@ mod jj;
 mod types;
 
 #[derive(Debug, Parser)]
-#[command(name = "jjc", about = "Simplify the jj commit experience")]
+#[command(name = "jjc", about = "Simplify the jj commit experience", version)]
 struct Cli {
     /// Commit message convention to use
     #[arg(short, long, value_enum)]
