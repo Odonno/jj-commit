@@ -2,12 +2,15 @@ use color_eyre::eyre::{ContextCompat, Result, WrapErr};
 use jj_lib::{
     backend::CommitId,
     config::{ConfigLayer, ConfigSource, StackedConfig},
+    gitignore::GitIgnoreFile,
     local_working_copy::{LocalWorkingCopy, LocalWorkingCopyFactory},
+    matchers::{EverythingMatcher, NothingMatcher},
     op_store::RefTarget,
     ref_name::RefNameBuf,
     repo::{Repo, StoreFactories},
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
+    working_copy::SnapshotOptions,
     workspace::{WorkingCopyFactories, Workspace},
 };
 use std::{env, path::PathBuf};
@@ -157,13 +160,46 @@ pub async fn commit(message: &str) -> Result<CommitId> {
         .get_commit(&wc_commit_id)
         .wrap_err("Failed to get working-copy commit")?;
 
+    // Lock the working copy and snapshot the on-disk state before rewriting the
+    // commit. Without this, any file changes made since the last `jj` command
+    // ran would be missing from the committed tree because jj-lib only records
+    // the working copy lazily (on explicit snapshot).
+
+    // Load .gitignore from the workspace root so the snapshot skips ignored
+    // paths (e.g. target/, .git/) instead of hashing them all.
+    // Must be done before start_working_copy_mutation() takes a mutable borrow.
+    let root_gitignore = GitIgnoreFile::empty()
+        .chain_with_file("", workspace.workspace_root().join(".gitignore"))
+        .wrap_err("Failed to load .gitignore")?;
+
+    let mut locked_ws = workspace
+        .start_working_copy_mutation()
+        .wrap_err("Failed to lock working copy")?;
+
+    let snapshot_options = SnapshotOptions {
+        base_ignores: root_gitignore,
+        progress: None,
+        // Auto-track all new untracked files, matching jj's default behaviour
+        // (snapshot.auto-track = "all()").
+        start_tracking_matcher: &EverythingMatcher,
+        // Never force-track ignored or oversized files.
+        force_tracking_matcher: &NothingMatcher,
+        max_new_file_size: u64::MAX,
+    };
+    let (snapshot_tree, _stats) = locked_ws
+        .locked_wc()
+        .snapshot(&snapshot_options)
+        .await
+        .wrap_err("Failed to snapshot working copy")?;
+
     // Start a mutable transaction
     let mut tx = repo.start_transaction();
     let repo = tx.repo_mut();
 
-    // Rewrite the WC commit with the new description
+    // Rewrite the WC commit with the snapshotted tree and the new description
     let new_commit = repo
         .rewrite_commit(&wc_commit)
+        .set_tree(snapshot_tree)
         .set_description(message)
         .write()
         .await
@@ -176,7 +212,8 @@ pub async fn commit(message: &str) -> Result<CommitId> {
         .wrap_err("Failed to rebase descendants")?;
 
     // Check out onto the new commit (creates a new empty WC commit on top)
-    repo.check_out(workspace_name.clone(), &new_commit)
+    let new_wc_commit = repo
+        .check_out(workspace_name.clone(), &new_commit)
         .await
         .wrap_err("Failed to check out new commit")?;
 
@@ -186,11 +223,17 @@ pub async fn commit(message: &str) -> Result<CommitId> {
         .await
         .wrap_err("Failed to commit transaction")?;
 
-    // Update the working copy on disk
-    workspace
-        .check_out(new_repo.op_id().clone(), None, &new_commit)
+    // Point the on-disk working copy to the new empty WC commit and release the lock.
+    // This replaces the previous `workspace.check_out()` call; doing it
+    // through the already-held lock avoids a redundant re-lock.
+    locked_ws
+        .locked_wc()
+        .check_out(&new_wc_commit)
         .await
-        .wrap_err("Failed to update working copy")?;
+        .wrap_err("Failed to update working copy to new commit")?;
+    locked_ws
+        .finish(new_repo.op_id().clone())
+        .wrap_err("Failed to finish working copy mutation")?;
 
     Ok(new_commit.id().clone())
 }
