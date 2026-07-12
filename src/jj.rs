@@ -82,8 +82,21 @@ fn load_config() -> Result<StackedConfig> {
     Ok(config)
 }
 
+fn find_workspace_root(cwd: &std::path::Path) -> Result<std::path::PathBuf> {
+    let mut dir = cwd;
+    loop {
+        if dir.join(".jj").is_dir() {
+            return Ok(dir.to_path_buf());
+        }
+        dir = dir
+            .parent()
+            .wrap_err("There is no Jujutsu repo in the current directory or any parent")?;
+    }
+}
+
 fn load_workspace() -> Result<Workspace> {
     let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    let workspace_root = find_workspace_root(&cwd)?;
 
     let settings =
         UserSettings::from_config(load_config()?).wrap_err("Failed to load jj settings")?;
@@ -94,7 +107,7 @@ fn load_workspace() -> Result<Workspace> {
         Box::new(LocalWorkingCopyFactory {}),
     );
 
-    Workspace::load(&settings, &cwd, &store_factories, &wc_factories)
+    Workspace::load(&settings, &workspace_root, &store_factories, &wc_factories)
         .wrap_err("Failed to load jj workspace")
 }
 

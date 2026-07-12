@@ -17,6 +17,10 @@ futures = "=0.3.32"
 jj-lib = "=0.43.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }
 
+[dev-dependencies]
+assert_cmd = "=2.2.2"
+tempfile = "=3.27.0"
+
 [[bin]]
 name = "jjc"
 path = "src/main.rs"
