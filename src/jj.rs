@@ -15,7 +15,10 @@ use jj_lib::{
     working_copy::SnapshotOptions,
     workspace::{WorkingCopyFactories, Workspace},
 };
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 /// Build a `StackedConfig` that mirrors what the real `jj` CLI loads:
 ///   1. jj-lib built-in defaults  (`user.name = ""`, `user.email = ""`, …)
@@ -94,9 +97,8 @@ fn find_workspace_root(cwd: &std::path::Path) -> Result<std::path::PathBuf> {
     }
 }
 
-fn load_workspace() -> Result<Workspace> {
-    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
-    let workspace_root = find_workspace_root(&cwd)?;
+fn load_workspace_at(cwd: &Path) -> Result<Workspace> {
+    let workspace_root = find_workspace_root(cwd)?;
 
     let settings =
         UserSettings::from_config(load_config()?).wrap_err("Failed to load jj settings")?;
@@ -113,7 +115,8 @@ fn load_workspace() -> Result<Workspace> {
 
 /// Fetch the last `n` commit descriptions from the jj repository.
 pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
-    let workspace = load_workspace()?;
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    let workspace = load_workspace_at(&cwd)?;
     let repo = workspace
         .repo_loader()
         .load_at_head()
@@ -156,7 +159,12 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
 /// Create a new commit with the given message using jj-lib directly.
 /// Returns the `CommitId` of the newly written (described) commit.
 pub async fn commit(message: &str) -> Result<CommitId> {
-    let mut workspace = load_workspace()?;
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    commit_at(message, &cwd).await
+}
+
+pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
+    let mut workspace = load_workspace_at(cwd)?;
     let repo = workspace
         .repo_loader()
         .load_at_head()
@@ -237,6 +245,14 @@ pub async fn commit(message: &str) -> Result<CommitId> {
         .await
         .wrap_err("Failed to check out new commit")?;
 
+    // Update git HEAD and reset the index so co-located git repos stay in sync.
+    // Skipped silently for non-git-backed workspaces.
+    if jj_lib::git::get_git_backend(repo.store()).is_ok() {
+        jj_lib::git::reset_head(repo, &new_wc_commit)
+            .await
+            .wrap_err("Failed to reset git HEAD and index")?;
+    }
+
     // Commit the transaction
     let new_repo = tx
         .commit("commit")
@@ -266,7 +282,8 @@ pub async fn commit(message: &str) -> Result<CommitId> {
 /// Skips the WC commit itself (typically an empty, open change).
 /// Returns `None` if no ancestor has any local bookmark.
 pub async fn find_nearest_ancestor_bookmarks() -> Result<Option<Vec<String>>> {
-    let workspace = load_workspace()?;
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    let workspace = load_workspace_at(&cwd)?;
     let repo = workspace
         .repo_loader()
         .load_at_head()
@@ -322,7 +339,8 @@ pub async fn find_nearest_ancestor_bookmarks() -> Result<Option<Vec<String>>> {
 
 /// Move local bookmark `name` to point to `commit_id`.
 pub async fn advance_bookmark(name: &str, commit_id: &CommitId) -> Result<()> {
-    let mut workspace = load_workspace()?;
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    let mut workspace = load_workspace_at(&cwd)?;
     let repo = workspace
         .repo_loader()
         .load_at_head()
@@ -359,4 +377,52 @@ pub async fn advance_bookmark(name: &str, commit_id: &CommitId) -> Result<()> {
         .wrap_err("Failed to update working copy after bookmark advance")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    async fn init_test_repo(dir: &Path) -> Result<()> {
+        // ponytail: env vars set per-test; tests must not run in parallel (cargo test -- --test-threads=1 if needed)
+        unsafe {
+            std::env::set_var("JJ_USER", "Test User");
+            std::env::set_var("JJ_EMAIL", "test@example.com");
+        }
+        let settings = UserSettings::from_config(load_config()?)?;
+        Workspace::init_colocated_git(&settings, dir).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_updates_git_head() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        fs::write(tmp.path().join("test.ts"), "export const x = 1;")?;
+
+        commit_at("test: add test.ts", tmp.path()).await?;
+
+        // Git HEAD should now point to the commit that contains test.ts
+        let output = std::process::Command::new("git")
+            .args([
+                "-C",
+                tmp.path().to_str().unwrap(),
+                "show",
+                "--name-only",
+                "--format=",
+                "HEAD",
+            ])
+            .output()?;
+
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(
+            stdout.trim().contains("test.ts"),
+            "expected test.ts in git HEAD, git show output: {stdout:?}"
+        );
+
+        Ok(())
+    }
 }
