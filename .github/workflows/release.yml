@@ -174,7 +174,7 @@ jobs:
           EOF
 
       - name: Publish jj-commit-bin to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: jj-commit-bin
           pkgbuild: aur-bin/PKGBUILD
@@ -257,7 +257,7 @@ jobs:
           EOF
 
       - name: Publish jj-commit to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: jj-commit
           pkgbuild: aur-src/PKGBUILD
