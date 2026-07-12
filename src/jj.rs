@@ -1,4 +1,5 @@
 use color_eyre::eyre::{ContextCompat, Result, WrapErr};
+use futures::StreamExt;
 use jj_lib::{
     backend::CommitId,
     config::{ConfigLayer, ConfigSource, StackedConfig},
@@ -8,6 +9,7 @@ use jj_lib::{
     op_store::RefTarget,
     ref_name::RefNameBuf,
     repo::{Repo, StoreFactories},
+    repo_path::RepoPath,
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
     working_copy::SnapshotOptions,
@@ -121,9 +123,10 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
         .evaluate(repo.as_ref())
         .wrap_err("Failed to evaluate revset")?;
 
+    let mut stream = revset.stream();
     let mut messages = Vec::new();
-    for commit_id in revset.iter() {
-        let commit_id = commit_id.wrap_err("Error iterating revset")?;
+    while let Some(result) = stream.next().await {
+        let commit_id = result.wrap_err("Error iterating revset")?;
         let commit = repo
             .store()
             .get_commit(&commit_id)
@@ -169,11 +172,12 @@ pub async fn commit(message: &str) -> Result<CommitId> {
     // paths (e.g. target/, .git/) instead of hashing them all.
     // Must be done before start_working_copy_mutation() takes a mutable borrow.
     let root_gitignore = GitIgnoreFile::empty()
-        .chain_with_file("", workspace.workspace_root().join(".gitignore"))
+        .chain_with_file(RepoPath::root(), workspace.workspace_root().join(".gitignore"))
         .wrap_err("Failed to load .gitignore")?;
 
     let mut locked_ws = workspace
         .start_working_copy_mutation()
+        .await
         .wrap_err("Failed to lock working copy")?;
 
     let snapshot_options = SnapshotOptions {
@@ -233,6 +237,7 @@ pub async fn commit(message: &str) -> Result<CommitId> {
         .wrap_err("Failed to update working copy to new commit")?;
     locked_ws
         .finish(new_repo.op_id().clone())
+        .await
         .wrap_err("Failed to finish working copy mutation")?;
 
     Ok(new_commit.id().clone())
