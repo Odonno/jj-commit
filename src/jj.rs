@@ -64,6 +64,17 @@ fn load_config() -> Result<StackedConfig> {
                 .load_file(ConfigSource::User, legacy_config)
                 .wrap_err("Failed to load ~/.jjconfig.toml")?;
         }
+
+        // Windows platform path: %APPDATA%\jj\config.toml
+        #[cfg(windows)]
+        if let Some(win_config) =
+            env::var_os("APPDATA").map(|a| PathBuf::from(a).join("jj").join("config.toml"))
+            && win_config.exists()
+        {
+            config
+                .load_file(ConfigSource::User, win_config)
+                .wrap_err("Failed to load Windows jj config")?;
+        }
     }
 
     // --- Env overrides layer ---
