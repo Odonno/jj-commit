@@ -41,6 +41,11 @@ async fn main() -> Result<()> {
 
     let new_commit_id = jj::commit(&commit_message).await?;
 
+    if !cli.bookmarks.is_empty() {
+        for name in &cli.bookmarks {
+            jj::advance_bookmark(name, &new_commit_id).await?;
+        }
+    }
     if let Some(bookmarks) = ancestor_bookmarks {
         let to_advance: Vec<String> = match bookmarks.len() {
             1 => bookmarks,
@@ -52,7 +57,7 @@ async fn main() -> Result<()> {
             jj::advance_bookmark(&name, &new_commit_id).await?;
         }
     } else if cli.advance_bookmark {
-        eprintln!("warning: no bookmarks found in ancestors; nothing to advance");
+        eprintln!("warning: --advance-bookmark found no bookmarks in ancestors");
     }
 
     Ok(())

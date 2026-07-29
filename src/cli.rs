@@ -24,4 +24,8 @@ pub struct Cli {
     /// Advance the bookmark from the closest ancestor to point to the newly created commit
     #[arg(short = 'a', long)]
     pub advance_bookmark: bool,
+
+    /// Bookmark name(s) to create or move to the newly created commit (repeatable)
+    #[arg(short = 'b', long, value_name = "BOOKMARK")]
+    pub bookmarks: Vec<String>,
 }
