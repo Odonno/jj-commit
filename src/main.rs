@@ -2,34 +2,13 @@ use clap::Parser;
 use color_eyre::eyre::{Result, bail};
 use inquire::MultiSelect;
 
+use crate::cli::Cli;
+
+mod cli;
 mod commit;
 mod convention;
 mod jj;
 mod types;
-
-#[derive(Debug, Parser)]
-#[command(name = "jjc", about = "Simplify the jj commit experience", version)]
-struct Cli {
-    /// Commit message convention to use
-    #[arg(short, long, value_enum)]
-    convention: Option<convention::Convention>,
-
-    /// Commit message (optional pre-fill; format depends on convention)
-    #[arg(short, long)]
-    message: Option<String>,
-
-    /// Conventional commit type, only from the conventional convention
-    #[arg(short, long, value_enum, value_name = "TYPE")]
-    r#type: Option<types::ConventionalType>,
-
-    /// Conventional commit scopes, only from the conventional convention (repeatable)
-    #[arg(short, long, value_name = "SCOPE")]
-    scopes: Vec<String>,
-
-    /// Advance the bookmark from the closest ancestor to point to the newly created commit
-    #[arg(short = 'a', long)]
-    advance_bookmark: bool,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
