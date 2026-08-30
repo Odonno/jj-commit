@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    let new_commit_id = jj::commit(&commit_message).await?;
+    let new_commit_id = jj::commit(&commit_message, &cli.paths).await?;
 
     if !cli.bookmarks.is_empty() {
         for name in &cli.bookmarks {

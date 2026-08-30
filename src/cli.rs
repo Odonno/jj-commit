@@ -28,4 +28,9 @@ pub struct Cli {
     /// Bookmark name(s) to create or move to the newly created commit (repeatable)
     #[arg(short = 'b', long, value_name = "BOOKMARK")]
     pub bookmarks: Vec<String>,
+
+    /// Trailing paths to commit (fileset expressions, relative to cwd).
+    /// When empty, all changes are committed.
+    #[arg(value_name = "PATHS")]
+    pub paths: Vec<String>,
 }

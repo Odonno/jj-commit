@@ -1,16 +1,19 @@
-use color_eyre::eyre::{ContextCompat, Result, WrapErr};
+use color_eyre::eyre::{ContextCompat, Result, WrapErr, bail};
 use futures::StreamExt;
 use jj_lib::{
     backend::CommitId,
     config::{ConfigLayer, ConfigSource, StackedConfig},
     default_backend_factories::default_backend_factories,
+    fileset,
+    fileset::{FilesetAliasesMap, FilesetDiagnostics, FilesetExpression, FilesetParseContext},
     gitignore::GitIgnoreFile,
     local_working_copy::{LocalWorkingCopy, LocalWorkingCopyFactory},
-    matchers::{EverythingMatcher, NothingMatcher},
+    matchers::{EverythingMatcher, Matcher, NothingMatcher},
+    merged_tree_builder::MergedTreeBuilder,
     op_store::RefTarget,
     ref_name::RefNameBuf,
     repo::Repo,
-    repo_path::RepoPath,
+    repo_path::{RepoPath, RepoPathUiConverter},
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
     working_copy::SnapshotOptions,
@@ -168,14 +171,44 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
     Ok(messages)
 }
 
-/// Create a new commit with the given message using jj-lib directly.
-/// Returns the `CommitId` of the newly written (described) commit.
-pub async fn commit(message: &str) -> Result<CommitId> {
-    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
-    commit_at(message, &cwd).await
+/// Parse cwd-relative fileset expressions (e.g. `src/`, `*.rs`, `a|b`) into
+/// a single matcher, exactly like `jj commit <paths>` resolves them.
+fn build_path_matcher(
+    paths: &[String],
+    cwd: &Path,
+    workspace_root: &Path,
+) -> Result<Box<dyn Matcher>> {
+    let cwd = dunce::canonicalize(cwd).wrap_err("failed to canonicalize cwd")?;
+    let base =
+        dunce::canonicalize(workspace_root).wrap_err("failed to canonicalize workspace root")?;
+    let path_converter = RepoPathUiConverter::Fs { cwd, base };
+    let aliases_map = FilesetAliasesMap::new();
+    let mut diagnostics = FilesetDiagnostics::new();
+    let expressions: Vec<FilesetExpression> = paths
+        .iter()
+        .map(|text| {
+            fileset::parse_maybe_bare(
+                &mut diagnostics,
+                text,
+                &FilesetParseContext {
+                    aliases_map: &aliases_map,
+                    path_converter: &path_converter,
+                },
+            )
+            .wrap_err_with(|| format!("invalid fileset expression: {text}"))
+        })
+        .collect::<Result<_>>()?;
+    Ok(FilesetExpression::union_all(expressions).to_matcher())
 }
 
-pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
+/// Create a new commit with the given message using jj-lib directly.
+/// Returns the `CommitId` of the newly written (described) commit.
+pub async fn commit(message: &str, paths: &[String]) -> Result<CommitId> {
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+    commit_at(message, &cwd, paths).await
+}
+
+pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<CommitId> {
     let mut workspace = load_workspace_at(cwd)?;
     let repo = workspace
         .repo_loader()
@@ -211,6 +244,13 @@ pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
         )
         .wrap_err("Failed to load .gitignore")?;
 
+    // Resolve path matching before locking the working copy (the lock takes a mutable borrow of the workspace).
+    let path_matcher = if paths.is_empty() {
+        None
+    } else {
+        Some(build_path_matcher(paths, cwd, workspace.workspace_root())?)
+    };
+
     let mut locked_ws = workspace
         .start_working_copy_mutation()
         .await
@@ -232,6 +272,28 @@ pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
         .await
         .wrap_err("Failed to snapshot working copy")?;
 
+    // If paths are given, the new commit gets only the matching changes;
+    // the rest stay behind in the new working-copy commit (jj `commit <paths>` split).
+    let commit_tree = if let Some(matcher) = path_matcher.as_deref() {
+        let mut tree_builder = MergedTreeBuilder::new(wc_commit.tree());
+        let mut matched = false;
+        let mut diff_stream = wc_commit.tree().diff_stream(&snapshot_tree, matcher);
+        while let Some(entry) = diff_stream.next().await {
+            let after = entry.values.wrap_err("Failed to read diff values")?.after;
+            tree_builder.set_or_remove(entry.path, after);
+            matched = true;
+        }
+        if !matched {
+            bail!("no matching files: {}", paths.join(" "));
+        }
+        tree_builder
+            .write_tree()
+            .await
+            .wrap_err("Failed to write tree")?
+    } else {
+        snapshot_tree.clone()
+    };
+
     // Start a mutable transaction
     let mut tx = repo.start_transaction();
     let repo = tx.repo_mut();
@@ -239,7 +301,7 @@ pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
     // Rewrite the WC commit with the snapshotted tree and the new description
     let new_commit = repo
         .rewrite_commit(&wc_commit)
-        .set_tree(snapshot_tree)
+        .set_tree(commit_tree)
         .set_description(message)
         .write()
         .await
@@ -251,11 +313,24 @@ pub async fn commit_at(message: &str, cwd: &Path) -> Result<CommitId> {
         .await
         .wrap_err("Failed to rebase descendants")?;
 
-    // Check out onto the new commit (creates a new empty WC commit on top)
-    let new_wc_commit = repo
-        .check_out(workspace_name.clone(), &new_commit)
-        .await
-        .wrap_err("Failed to check out new commit")?;
+    // Check out onto the new commit (creates a new empty WC commit on top).
+    // With paths, the new WC commit keeps the full snapshotted tree so the
+    // unselected changes remain in the working copy.
+    let new_wc_commit = if path_matcher.is_none() {
+        repo.check_out(workspace_name.clone(), &new_commit)
+            .await
+            .wrap_err("Failed to check out new commit")?
+    } else {
+        let wc_commit = repo
+            .new_commit(vec![new_commit.id().clone()], snapshot_tree)
+            .write()
+            .await
+            .wrap_err("Failed to write new working-copy commit")?;
+        repo.edit(workspace_name.clone(), &wc_commit)
+            .await
+            .wrap_err("Failed to set new working-copy commit")?;
+        wc_commit
+    };
 
     // Update git HEAD and reset the index so co-located git repos stay in sync.
     // Skipped silently for non-git-backed workspaces.
@@ -415,7 +490,7 @@ mod tests {
 
         fs::write(tmp.path().join("test.ts"), "export const x = 1;")?;
 
-        commit_at("test: add test.ts", tmp.path()).await?;
+        commit_at("test: add test.ts", tmp.path(), &[]).await?;
 
         // Git HEAD should now point to the commit that contains test.ts
         let output = std::process::Command::new("git")
@@ -434,6 +509,86 @@ mod tests {
             stdout.trim().contains("test.ts"),
             "expected test.ts in git HEAD, git show output: {stdout:?}"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_with_paths_splits_changes() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        fs::write(tmp.path().join("committed.txt"), "committed")?;
+        fs::write(tmp.path().join("leftover.txt"), "leftover")?;
+
+        commit_at(
+            "test: only committed.txt",
+            tmp.path(),
+            &["committed.txt".to_string()],
+        )
+        .await?;
+
+        // In a colocated repo, git HEAD points at the parent of the jj WC commit,
+        // which is the newly described commit: it must contain only the selected path.
+        let output = std::process::Command::new("git")
+            .args([
+                "-C",
+                tmp.path().to_str().unwrap(),
+                "show",
+                "--name-only",
+                "--format=",
+                "HEAD",
+            ])
+            .output()?;
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(
+            stdout.contains("committed.txt"),
+            "expected committed.txt in committed change, git show output: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("leftover.txt"),
+            "leftover.txt must not be in the committed change, git show output: {stdout:?}"
+        );
+
+        // The leftover change must remain in the new working-copy commit
+        let workspace = load_workspace_at(tmp.path())?;
+        let repo = workspace.repo_loader().load_at_head().await?;
+        let wc_commit_id = repo
+            .view()
+            .get_wc_commit_id(workspace.workspace_name())
+            .cloned()
+            .wrap_err("No working-copy commit after commit_at")?;
+        let wc_commit = repo.store().get_commit(&wc_commit_id)?;
+        let leftover_path = RepoPath::from_internal_string("leftover.txt")?;
+        let value = wc_commit
+            .tree()
+            .path_value(leftover_path)
+            .await?
+            .into_resolved()
+            .map_err(|_| color_eyre::eyre::eyre!("leftover.txt is conflicted in the WC commit"))?;
+        assert!(
+            value.is_some(),
+            "leftover.txt must still be tracked in the working-copy commit"
+        );
+
+        // And still on disk
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("leftover.txt"))?,
+            "leftover"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_no_matching_paths_errors() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        fs::write(tmp.path().join("real.txt"), "x")?;
+
+        let err = commit_at("test: no match", tmp.path(), &["nope.txt".to_string()]).await;
+        assert!(err.is_err(), "expected an error when no paths match");
 
         Ok(())
     }
