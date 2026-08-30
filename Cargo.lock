@@ -1753,6 +1753,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "futures",
+ "gix-hash",
  "inquire",
  "jj-lib",
  "tempfile",

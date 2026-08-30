@@ -3,12 +3,13 @@ use futures::StreamExt;
 use jj_lib::{
     backend::CommitId,
     config::{ConfigLayer, ConfigSource, StackedConfig},
+    default_backend_factories::default_backend_factories,
     gitignore::GitIgnoreFile,
     local_working_copy::{LocalWorkingCopy, LocalWorkingCopyFactory},
     matchers::{EverythingMatcher, NothingMatcher},
     op_store::RefTarget,
     ref_name::RefNameBuf,
-    repo::{Repo, StoreFactories},
+    repo::Repo,
     repo_path::RepoPath,
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
@@ -113,7 +114,7 @@ fn load_workspace_at(cwd: &Path) -> Result<Workspace> {
 
     let settings =
         UserSettings::from_config(load_config()?).wrap_err("Failed to load jj settings")?;
-    let store_factories = StoreFactories::default();
+    let store_factories = default_backend_factories();
     let mut wc_factories = WorkingCopyFactories::default();
     wc_factories.insert(
         LocalWorkingCopy::name().to_owned(),
@@ -402,7 +403,7 @@ mod tests {
             std::env::set_var("JJ_EMAIL", "test@example.com");
         }
         let settings = UserSettings::from_config(load_config()?)?;
-        Workspace::init_colocated_git(&settings, dir).await?;
+        Workspace::init_colocated_git(&settings, dir, gix_hash::Kind::Sha1).await?;
 
         Ok(())
     }
