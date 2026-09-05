@@ -274,10 +274,16 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
 
     // If paths are given, the new commit gets only the matching changes;
     // the rest stay behind in the new working-copy commit (jj `commit <paths>` split).
+    // Diff against the PARENT tree: the WC commit has already been snapshotted by any
+    // prior `jj` invocation, so diffing it against the fresh snapshot would be empty.
     let commit_tree = if let Some(matcher) = path_matcher.as_deref() {
-        let mut tree_builder = MergedTreeBuilder::new(wc_commit.tree());
+        let parent_tree = wc_commit
+            .parent_tree(repo.as_ref())
+            .await
+            .wrap_err("Failed to read parent tree")?;
+        let mut tree_builder = MergedTreeBuilder::new(parent_tree.clone());
         let mut matched = false;
-        let mut diff_stream = wc_commit.tree().diff_stream(&snapshot_tree, matcher);
+        let mut diff_stream = parent_tree.diff_stream(&snapshot_tree, matcher);
         while let Some(entry) = diff_stream.next().await {
             let after = entry.values.wrap_err("Failed to read diff values")?.after;
             tree_builder.set_or_remove(entry.path, after);
