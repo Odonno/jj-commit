@@ -13,9 +13,10 @@ use jj_lib::{
     op_store::RefTarget,
     ref_name::RefNameBuf,
     repo::Repo,
-    repo_path::{RepoPath, RepoPathUiConverter},
+    repo_path::RepoPath,
     revset::{RevsetExpression, SymbolResolver, SymbolResolverExtension},
     settings::UserSettings,
+    ui_path::RepoPathUiConverter,
     working_copy::SnapshotOptions,
     workspace::{WorkingCopyFactories, Workspace},
 };
@@ -217,6 +218,7 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
         .wrap_err("Failed to load jj repo")?;
 
     let workspace_name = workspace.workspace_name().to_owned();
+    let workspace_root = workspace.workspace_root().to_path_buf();
 
     // Get the current working-copy commit
     let wc_commit_id = repo
@@ -341,7 +343,7 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
     // Update git HEAD and reset the index so co-located git repos stay in sync.
     // Skipped silently for non-git-backed workspaces.
     if jj_lib::git::get_git_backend(repo.store()).is_ok() {
-        jj_lib::git::reset_head(repo, &new_wc_commit)
+        jj_lib::git::reset_head(repo, &workspace_name, &workspace_root, &new_wc_commit)
             .await
             .wrap_err("Failed to reset git HEAD and index")?;
     }

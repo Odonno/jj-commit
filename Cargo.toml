@@ -15,12 +15,12 @@ color-eyre = "=0.6.5"
 dunce = "=1.0.5"
 inquire = "=0.9.4"
 futures = "=0.3.32"
-jj-lib = "=0.44.0"
+jj-lib = "=0.45.1"
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 assert_cmd = "=2.2.2"
-gix-hash = "=0.25.1"
+gix-hash = "=0.26.2"
 tempfile = "=3.27.0"
 
 [[bin]]
