@@ -23,6 +23,7 @@ use jj_lib::{
 use std::{
     env,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// Build a `StackedConfig` that mirrors what the real `jj` CLI loads:
@@ -202,6 +203,54 @@ fn build_path_matcher(
     Ok(FilesetExpression::union_all(expressions).to_matcher())
 }
 
+/// Build the snapshot's base ignore chain exactly like the jj CLI (`jj-cli`'s `CommandHelper::base_ignores`):
+///
+/// 1. `core.excludesFile` from the git config cascade (`~`-expanded, resolved
+///    against the workspace root when relative), falling back to `$XDG_CONFIG_HOME/git/ignore` (or `~/.config/git/ignore`)
+/// 2. `.git/info/exclude`
+///
+/// Per-directory `.gitignore` files (including the root one) are chained automatically by the snapshot walk itself.
+///
+/// Non-git-backed repos get an empty chain; jjc targets colocated git repos.
+fn base_ignores(repo: &dyn Repo, workspace_root: &Path) -> Result<Arc<GitIgnoreFile>> {
+    let Ok(git_backend) = jj_lib::git::get_git_backend(repo.store()) else {
+        return Ok(GitIgnoreFile::empty());
+    };
+
+    let mut ignores = GitIgnoreFile::empty();
+
+    let git_repo = git_backend.git_repo();
+    let excludes_file = git_repo
+        .config_snapshot()
+        .string("core.excludesFile")
+        .and_then(|value| {
+            str::from_utf8(&value)
+                .ok()
+                .map(|path| workspace_root.join(jj_lib::file_util::expand_home_path(path)))
+        })
+        .or_else(|| {
+            let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+            Some(xdg_config_home.join("git").join("ignore"))
+        });
+    if let Some(path) = excludes_file {
+        ignores = ignores
+            .chain_with_file(RepoPath::root(), path)
+            .wrap_err("Failed to load git excludes file")?;
+    }
+
+    ignores = ignores
+        .chain_with_file(
+            RepoPath::root(),
+            git_backend.git_repo_path().join("info").join("exclude"),
+        )
+        .wrap_err("Failed to load .git/info/exclude")?;
+
+    Ok(ignores)
+}
+
 /// Create a new commit with the given message using jj-lib directly.
 /// Returns the `CommitId` of the newly written (described) commit.
 pub async fn commit(message: &str, paths: &[String]) -> Result<CommitId> {
@@ -236,15 +285,9 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
     // ran would be missing from the committed tree because jj-lib only records
     // the working copy lazily (on explicit snapshot).
 
-    // Load .gitignore from the workspace root so the snapshot skips ignored
-    // paths (e.g. target/, .git/) instead of hashing them all.
-    // Must be done before start_working_copy_mutation() takes a mutable borrow.
-    let root_gitignore = GitIgnoreFile::empty()
-        .chain_with_file(
-            RepoPath::root(),
-            workspace.workspace_root().join(".gitignore"),
-        )
-        .wrap_err("Failed to load .gitignore")?;
+    // Base ignores (git excludes file + .git/info/exclude) must be built before
+    // start_working_copy_mutation() takes a mutable borrow of the workspace.
+    let snapshot_ignores = base_ignores(repo.as_ref(), workspace.workspace_root())?;
 
     // Resolve path matching before locking the working copy (the lock takes a mutable borrow of the workspace).
     let path_matcher = if paths.is_empty() {
@@ -259,7 +302,7 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
         .wrap_err("Failed to lock working copy")?;
 
     let snapshot_options = SnapshotOptions {
-        base_ignores: root_gitignore,
+        base_ignores: snapshot_ignores,
         progress: None,
         // Auto-track all new untracked files, matching jj's default behaviour
         // (snapshot.auto-track = "all()").
@@ -597,6 +640,118 @@ mod tests {
 
         let err = commit_at("test: no match", tmp.path(), &["nope.txt".to_string()]).await;
         assert!(err.is_err(), "expected an error when no paths match");
+
+        Ok(())
+    }
+
+    /// `git show --name-only --format= HEAD`:
+    /// the file names of the commit git HEAD points at (the just-described change in a colocated repo).
+    fn git_show_names(dir: &Path) -> Result<String> {
+        let output = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir.to_str().unwrap(),
+                "show",
+                "--name-only",
+                "--format=",
+                "HEAD",
+            ])
+            .output()?;
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_respects_core_excludes_file() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        let excludes_file = tmp.path().join("global-excludes");
+        fs::write(&excludes_file, "secret.txt\n")?;
+        let output = std::process::Command::new("git")
+            .args([
+                "-C",
+                tmp.path().to_str().unwrap(),
+                "config",
+                "core.excludesFile",
+                excludes_file.to_str().unwrap(),
+            ])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "git config core.excludesFile failed: {output:?}"
+        );
+
+        fs::write(tmp.path().join("secret.txt"), "must stay untracked")?;
+        fs::write(tmp.path().join("real.txt"), "committed")?;
+
+        commit_at("test: excludes file", tmp.path(), &[]).await?;
+
+        let stdout = git_show_names(tmp.path())?;
+        assert!(
+            stdout.contains("real.txt"),
+            "expected real.txt in committed change, git show output: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("secret.txt"),
+            "secret.txt must not be committed (core.excludesFile), git show output: {stdout:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_respects_git_info_exclude() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        fs::create_dir_all(tmp.path().join(".git").join("info"))?;
+        fs::write(
+            tmp.path().join(".git").join("info").join("exclude"),
+            "local-only.txt\n",
+        )?;
+
+        fs::write(tmp.path().join("local-only.txt"), "must stay untracked")?;
+        fs::write(tmp.path().join("kept.txt"), "committed")?;
+
+        commit_at("test: info exclude", tmp.path(), &[]).await?;
+
+        let stdout = git_show_names(tmp.path())?;
+        assert!(
+            stdout.contains("kept.txt"),
+            "expected kept.txt in committed change, git show output: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("local-only.txt"),
+            "local-only.txt must not be committed (.git/info/exclude), git show output: {stdout:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_commit_at_respects_root_gitignore() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        init_test_repo(tmp.path()).await?;
+
+        fs::write(tmp.path().join(".gitignore"), "ignored-by-root.txt\n")?;
+        fs::write(
+            tmp.path().join("ignored-by-root.txt"),
+            "must stay untracked",
+        )?;
+        fs::write(tmp.path().join("kept.txt"), "committed")?;
+
+        commit_at("test: root gitignore", tmp.path(), &[]).await?;
+
+        let stdout = git_show_names(tmp.path())?;
+        assert!(
+            stdout.contains("kept.txt"),
+            "expected kept.txt in committed change, git show output: {stdout:?}"
+        );
+        assert!(
+            !stdout.contains("ignored-by-root.txt"),
+            "ignored-by-root.txt must not be committed (root .gitignore), git show output: {stdout:?}"
+        );
 
         Ok(())
     }
