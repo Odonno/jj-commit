@@ -16,7 +16,7 @@ dunce = "=1.0.5"
 inquire = "=0.9.4"
 futures = "=0.3.32"
 jj-lib = "=0.45.1"
-tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 assert_cmd = "=2.2.2"
