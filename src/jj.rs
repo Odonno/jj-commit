@@ -117,12 +117,14 @@ fn find_workspace_root(cwd: &std::path::Path) -> Result<std::path::PathBuf> {
 fn load_workspace_at(cwd: &Path) -> Result<Workspace> {
     let workspace_root = find_workspace_root(cwd)?;
 
-    let settings =
-        UserSettings::from_config(load_config()?).wrap_err("Failed to load jj settings")?;
+    let config = load_config()?;
+    let home_dir = env::home_dir();
+    let settings = UserSettings::from_config_and_home_dir(config, home_dir)
+        .wrap_err("Failed to load jj settings")?;
     let store_factories = default_backend_factories();
     let mut wc_factories = WorkingCopyFactories::default();
     wc_factories.insert(
-        LocalWorkingCopy::name().to_owned(),
+        LocalWorkingCopy::NAME.to_owned(),
         Box::new(LocalWorkingCopyFactory {}),
     );
 
@@ -152,9 +154,7 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
         .resolve_user_expression(repo.as_ref(), &symbol_resolver)
         .wrap_err("Failed to resolve revset expression")?;
 
-    let revset = resolved
-        .evaluate(repo.as_ref())
-        .wrap_err("Failed to evaluate revset")?;
+    let revset = resolved.evaluate().wrap_err("Failed to evaluate revset")?;
 
     let mut stream = revset.stream();
     let mut messages = Vec::new();
@@ -220,13 +220,17 @@ fn base_ignores(repo: &dyn Repo, workspace_root: &Path) -> Result<Arc<GitIgnoreF
     let mut ignores = GitIgnoreFile::empty();
 
     let git_repo = git_backend.git_repo();
+    let home_dir = env::home_dir();
     let excludes_file = git_repo
         .config_snapshot()
         .string("core.excludesFile")
         .and_then(|value| {
-            str::from_utf8(&value)
-                .ok()
-                .map(|path| workspace_root.join(jj_lib::file_util::expand_home_path(path)))
+            str::from_utf8(&value).ok().map(|path| {
+                workspace_root.join(jj_lib::file_util::expand_home_path(
+                    path,
+                    home_dir.as_deref(),
+                ))
+            })
         })
         .or_else(|| {
             let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
@@ -528,7 +532,7 @@ mod tests {
             std::env::set_var("JJ_USER", "Test User");
             std::env::set_var("JJ_EMAIL", "test@example.com");
         }
-        let settings = UserSettings::from_config(load_config()?)?;
+        let settings = UserSettings::from_config_and_home_dir(load_config()?, env::home_dir())?;
         Workspace::init_colocated_git(&settings, dir, gix_hash::Kind::Sha1).await?;
 
         Ok(())
