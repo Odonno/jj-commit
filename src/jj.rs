@@ -262,6 +262,65 @@ pub async fn commit(message: &str, paths: &[String]) -> Result<CommitId> {
     commit_at(message, &cwd, paths).await
 }
 
+/// Run the real `jj commit --interactive` so the user can pick changes in their
+/// diff editor, then return the `CommitId` of the commit jj created (the parent
+/// of the new empty working-copy commit, i.e. `@-`).
+pub async fn commit_interactive(
+    message: &str,
+    paths: &[String],
+    tool: Option<&str>,
+) -> Result<CommitId> {
+    let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
+
+    let mut command = std::process::Command::new("jj");
+    command
+        .arg("commit")
+        .arg("--interactive")
+        .arg("--message")
+        .arg(message)
+        .current_dir(&cwd);
+    if let Some(tool) = tool {
+        command.arg(format!("--tool={tool}"));
+    }
+    command.args(paths);
+
+    // Inherited stdio so the interactive diff editor gets the terminal.
+    let status = match command.status() {
+        Ok(status) => status,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("--interactive requires the jj CLI, but no `jj` executable was found on PATH");
+        }
+        Err(err) => return Err(err).wrap_err("failed to run jj commit --interactive"),
+    };
+    if !status.success() {
+        // jj has already printed its own error to stderr.
+        bail!("jj commit --interactive exited with {status}");
+    }
+
+    // After `jj commit`, @ is a fresh empty working-copy commit and its parent
+    // is the commit that was just created.
+    let workspace = load_workspace_at(&cwd)?;
+    let repo = workspace
+        .repo_loader()
+        .load_at_head()
+        .await
+        .wrap_err("Failed to load jj repo")?;
+    let wc_commit_id = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .cloned()
+        .wrap_err("No working-copy commit found for this workspace")?;
+    let wc_commit = repo
+        .store()
+        .get_commit(&wc_commit_id)
+        .wrap_err("Failed to get working-copy commit")?;
+    wc_commit
+        .parent_ids()
+        .first()
+        .cloned()
+        .context("new working-copy commit has no parent")
+}
+
 pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<CommitId> {
     let mut workspace = load_workspace_at(cwd)?;
     let repo = workspace

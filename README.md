@@ -188,6 +188,28 @@ Resulting commit message:
 ✨ streaming support for chat API
 ```
 
+### Interactively select changes
+
+Use `--interactive` (`-i`) to pick which changes go into the commit in your diff editor, exactly like `jj commit -i`. The message prompts run first; your diff editor (`ui.diff-editor`) opens afterwards.
+
+```sh
+jjc --interactive
+```
+
+Trailing paths still narrow the selection, and all the usual flags (convention pre-fill, bookmarks, `--advance-bookmark`) keep working:
+
+```sh
+jjc -i src/ -a
+```
+
+To override the diff editor for a single run, pass `--tool`:
+
+```sh
+jjc -i --tool meld
+```
+
+`--interactive` (and therefore `--tool`) requires the real `jj` CLI on your `PATH`; `jjc` fails fast with a clear error if it is missing.
+
 ---
 
 ## Bookmarks
@@ -283,7 +305,7 @@ Unlike a thin wrapper that calls out to the `jj` binary, `jjc` links against `jj
 5. **Syncs** the Git index and `HEAD` for co-located Git repos so the Git view matches Jujutsu.
 6. Optionally **advances bookmarks** before or after the commit lands.
 
-This means you get the same resulting topology as `jj commit` — without spawning `jj`.
+This means you get the same resulting topology as `jj commit` — without spawning `jj`. The one exception is `--interactive`, which delegates to the real `jj commit -i` (see above) so your configured diff editor drives the selection.
 
 ---
 

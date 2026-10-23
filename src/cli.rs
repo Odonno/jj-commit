@@ -29,6 +29,14 @@ pub struct Cli {
     #[arg(short = 'b', long, value_name = "BOOKMARK")]
     pub bookmarks: Vec<String>,
 
+    /// Interactively choose which changes to include in the commit (runs `jj commit --interactive`)
+    #[arg(short = 'i', long)]
+    pub interactive: bool,
+
+    /// Diff editor to use with --interactive (passed to `jj commit --tool`)
+    #[arg(long, value_name = "TOOL")]
+    pub tool: Option<String>,
+
     /// Trailing paths to commit (fileset expressions, relative to cwd).
     /// When empty, all changes are committed.
     #[arg(value_name = "PATHS")]

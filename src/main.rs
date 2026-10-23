@@ -23,6 +23,11 @@ async fn main() -> Result<()> {
         bail!("--type is only valid when using the conventional commit convention");
     }
 
+    // --tool is only meaningful for --interactive
+    if cli.tool.is_some() && !cli.interactive {
+        bail!("--tool is only valid together with --interactive");
+    }
+
     // --scopes is only meaningful for the conventional convention
     if !cli.scopes.is_empty() && convention != convention::Convention::Conventional {
         bail!("--scopes is only valid when using the conventional commit convention");
@@ -39,7 +44,11 @@ async fn main() -> Result<()> {
         None
     };
 
-    let new_commit_id = jj::commit(&commit_message, &cli.paths).await?;
+    let new_commit_id = if cli.interactive {
+        jj::commit_interactive(&commit_message, &cli.paths, cli.tool.as_deref()).await?
+    } else {
+        jj::commit(&commit_message, &cli.paths).await?
+    };
 
     if !cli.bookmarks.is_empty() {
         for name in &cli.bookmarks {
