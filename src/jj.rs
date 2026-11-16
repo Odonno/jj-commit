@@ -18,7 +18,9 @@ use jj_lib::{
     settings::UserSettings,
     ui_path::RepoPathUiConverter,
     working_copy::SnapshotOptions,
-    workspace::{WorkingCopyFactories, Workspace},
+    workspace::{
+        DefaultWorkspaceLoaderFactory, WorkingCopyFactories, Workspace, WorkspaceLoaderFactory,
+    },
 };
 use std::{
     env,
@@ -128,7 +130,11 @@ fn load_workspace_at(cwd: &Path) -> Result<Workspace> {
         Box::new(LocalWorkingCopyFactory {}),
     );
 
-    Workspace::load(&settings, &workspace_root, &store_factories, &wc_factories)
+    let loader = DefaultWorkspaceLoaderFactory
+        .create(&workspace_root)
+        .wrap_err("Failed to load jj workspace")?;
+    loader
+        .load(&settings, &store_factories, &wc_factories)
         .wrap_err("Failed to load jj workspace")
 }
 
@@ -137,7 +143,6 @@ pub async fn fetch_commit_messages(n: usize) -> Result<Vec<String>> {
     let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
     let workspace = load_workspace_at(&cwd)?;
     let repo = workspace
-        .repo_loader()
         .load_at_head()
         .await
         .wrap_err("Failed to load jj repo")?;
@@ -301,7 +306,6 @@ pub async fn commit_interactive(
     // is the commit that was just created.
     let workspace = load_workspace_at(&cwd)?;
     let repo = workspace
-        .repo_loader()
         .load_at_head()
         .await
         .wrap_err("Failed to load jj repo")?;
@@ -324,7 +328,6 @@ pub async fn commit_interactive(
 pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<CommitId> {
     let mut workspace = load_workspace_at(cwd)?;
     let repo = workspace
-        .repo_loader()
         .load_at_head()
         .await
         .wrap_err("Failed to load jj repo")?;
@@ -386,15 +389,17 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
     // prior `jj` invocation, so diffing it against the fresh snapshot would be empty.
     let commit_tree = if let Some(matcher) = path_matcher.as_deref() {
         let parent_tree = wc_commit
-            .parent_tree(repo.as_ref())
+            .parent_tree(repo.index())
             .await
             .wrap_err("Failed to read parent tree")?;
         let mut tree_builder = MergedTreeBuilder::new(parent_tree.clone());
         let mut matched = false;
-        let mut diff_stream = parent_tree.diff_stream(&snapshot_tree, matcher);
+        let mut diff_stream = parent_tree.diff(&snapshot_tree, matcher);
         while let Some(entry) = diff_stream.next().await {
             let after = entry.values.wrap_err("Failed to read diff values")?.after;
-            tree_builder.set_or_remove(entry.path, after);
+            tree_builder
+                .set_or_remove_merge(entry.path, after)
+                .wrap_err("Failed to set tree value")?;
             matched = true;
         }
         if !matched {
@@ -449,9 +454,14 @@ pub async fn commit_at(message: &str, cwd: &Path, paths: &[String]) -> Result<Co
     // Update git HEAD and reset the index so co-located git repos stay in sync.
     // Skipped silently for non-git-backed workspaces.
     if jj_lib::git::get_git_backend(repo.store()).is_ok() {
-        jj_lib::git::reset_head(repo, &workspace_name, &workspace_root, &new_wc_commit)
-            .await
-            .wrap_err("Failed to reset git HEAD and index")?;
+        jj_lib::git::reset_head(
+            repo,
+            &workspace_name,
+            &workspace_root,
+            (Some(&wc_commit), &new_wc_commit),
+        )
+        .await
+        .wrap_err("Failed to reset git HEAD and index")?;
     }
 
     // Commit the transaction
@@ -486,7 +496,6 @@ pub async fn find_nearest_ancestor_bookmarks() -> Result<Option<Vec<String>>> {
     let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
     let workspace = load_workspace_at(&cwd)?;
     let repo = workspace
-        .repo_loader()
         .load_at_head()
         .await
         .wrap_err("Failed to load jj repo")?;
@@ -543,7 +552,6 @@ pub async fn advance_bookmark(name: &str, commit_id: &CommitId) -> Result<()> {
     let cwd = env::current_dir().wrap_err("Failed to get current directory")?;
     let mut workspace = load_workspace_at(&cwd)?;
     let repo = workspace
-        .repo_loader()
         .load_at_head()
         .await
         .wrap_err("Failed to load jj repo")?;
@@ -583,6 +591,7 @@ pub async fn advance_bookmark(name: &str, commit_id: &CommitId) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jj_lib::ref_name::WorkspaceName;
     use std::fs;
 
     async fn init_test_repo(dir: &Path) -> Result<()> {
@@ -592,7 +601,8 @@ mod tests {
             std::env::set_var("JJ_EMAIL", "test@example.com");
         }
         let settings = UserSettings::from_config_and_home_dir(load_config()?, env::home_dir())?;
-        Workspace::init_colocated_git(&settings, dir, gix_hash::Kind::Sha1).await?;
+        Workspace::init_colocated_git(&settings, dir, WorkspaceName::DEFAULT, gix_hash::Kind::Sha1)
+            .await?;
 
         Ok(())
     }
@@ -666,7 +676,7 @@ mod tests {
 
         // The leftover change must remain in the new working-copy commit
         let workspace = load_workspace_at(tmp.path())?;
-        let repo = workspace.repo_loader().load_at_head().await?;
+        let repo = workspace.load_at_head().await?;
         let wc_commit_id = repo
             .view()
             .get_wc_commit_id(workspace.workspace_name())
